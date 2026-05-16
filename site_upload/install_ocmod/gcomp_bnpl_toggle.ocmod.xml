@@ -1,40 +1,41 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <modification>
   <name>GCOMP BNPL Toggle</name>
   <code>gcomp_bnpl_toggle</code>
-  <version>1.0</version>
+  <version>1.3</version>
   <author>gcomp.ge</author>
 
   <!-- ========== ADMIN: product form ========== -->
 
-  <!-- 1. Add bnpl_disabled to product save SQL -->
+  <!-- 1a. Add bnpl_disabled to product save SQL (INSERT) -->
   <file path="admin/model/catalog/product.php">
     <operation>
-      <search><![CDATA[$this->db->query("INSERT INTO " . DB_PREFIX . "product SET]]></search>
-      <add position="replace"><![CDATA[$this->db->query("INSERT INTO " . DB_PREFIX . "product SET bnpl_disabled = '" . (isset($data['bnpl_disabled']) ? (int)$data['bnpl_disabled'] : 0) . "',]]></add>
+      <search><![CDATA[$this->db->query("INSERT INTO " . DB_PREFIX . "product SET model =]]></search>
+      <add position="replace"><![CDATA[$this->db->query("INSERT INTO " . DB_PREFIX . "product SET bnpl_disabled = '" . (isset($data['bnpl_disabled']) ? (int)$data['bnpl_disabled'] : 0) . "', model =]]></add>
     </operation>
+    <!-- 1b. UPDATE main product row -->
     <operation>
-      <search><![CDATA[$this->db->query("UPDATE " . DB_PREFIX . "product SET]]></search>
-      <add position="replace"><![CDATA[$this->db->query("UPDATE " . DB_PREFIX . "product SET bnpl_disabled = '" . (isset($data['bnpl_disabled']) ? (int)$data['bnpl_disabled'] : 0) . "',]]></add>
+      <search><![CDATA[$this->db->query("UPDATE " . DB_PREFIX . "product SET model =]]></search>
+      <add position="replace"><![CDATA[$this->db->query("UPDATE " . DB_PREFIX . "product SET bnpl_disabled = '" . (isset($data['bnpl_disabled']) ? (int)$data['bnpl_disabled'] : 0) . "', model =]]></add>
     </operation>
   </file>
 
-  <!-- 2. Add checkbox to product form (Data tab) -->
+  <!-- 2. Add select to product form (Data tab) — anchor preserves Chameleon indent -->
   <file path="admin/view/template/catalog/product_form.twig">
     <operation>
       <search><![CDATA[<label class="col-sm-2 control-label" for="input-status">{{ entry_status }}</label>]]></search>
-      <add position="before"><![CDATA[
-        <div class="form-group">
-          <label class="col-sm-2 control-label" for="input-bnpl-disabled">{{ entry_bnpl_disabled|default('ნაწილ-ნაწილ გათიშულია') }}</label>
-          <div class="col-sm-10">
-            <select name="bnpl_disabled" id="input-bnpl-disabled" class="form-control">
-              <option value="0" {% if not bnpl_disabled %}selected{% endif %}>{{ text_no|default('არა') }}</option>
-              <option value="1" {% if bnpl_disabled %}selected{% endif %}>{{ text_yes|default('კი') }}</option>
-            </select>
-            <div class="help-block">{{ help_bnpl_disabled|default('ნაწილ-ნაწილ (BNPL) გადახდის გათიშვა ამ პროდუქტზე') }}</div>
-          </div>
-        </div>
-      ]]></add>
+      <add position="before" offset="1"><![CDATA[
+              <div class="form-group">
+                <label class="col-sm-2 control-label" for="input-bnpl-disabled">{{ entry_bnpl_disabled|default('ნაწილ-ნაწილ გათიშულია') }}</label>
+                <div class="col-sm-10">
+                  <select name="bnpl_disabled" id="input-bnpl-disabled" class="form-control">
+                    <option value="0" {% if not bnpl_disabled %}selected{% endif %}>{{ text_no|default('არა') }}</option>
+                    <option value="1" {% if bnpl_disabled %}selected{% endif %}>{{ text_yes|default('კი') }}</option>
+                  </select>
+                  <div class="help-block">{{ help_bnpl_disabled|default('ნაწილ-ნაწილ (BNPL) გადახდის გათიშვა ამ პროდუქტზე') }}</div>
+                </div>
+              </div>
+]]></add>
     </operation>
   </file>
 
@@ -56,33 +57,70 @@
 
   <!-- ========== CATALOG: filter BNPL methods at checkout ========== -->
 
-  <!-- 4. In checkout payment_method, hide BNPL if any cart item has bnpl_disabled = 1 -->
+  <!-- 4a. Detect cart-wide BNPL block flag — anchor on the SECOND load of setting/extension (the one before the payment loop) -->
   <file path="catalog/controller/checkout/payment_method.php">
     <operation>
-      <search><![CDATA[$this->load->model('setting/extension');]]></search>
+      <search index="1"><![CDATA[$this->load->model('setting/extension');]]></search>
       <add position="after"><![CDATA[
-      // GCOMP BNPL toggle: check if any cart item disables BNPL
-      $gcomp_bnpl_blocked = false;
-      foreach ($this->cart->getProducts() as $cart_product) {
-        $pinfo = $this->db->query("SELECT bnpl_disabled FROM " . DB_PREFIX . "product WHERE product_id = '" . (int)$cart_product['product_id'] . "'");
-        if ($pinfo->num_rows && $pinfo->row['bnpl_disabled']) {
-          $gcomp_bnpl_blocked = true;
-          break;
-        }
-      }
-      ]]></add>
+			// GCOMP BNPL toggle: check if any cart item disables BNPL
+			$gcomp_bnpl_blocked = false;
+			$gcomp_cart_pids = array();
+			foreach ($this->cart->getProducts() as $cart_product) {
+				$gcomp_cart_pids[] = (int)$cart_product['product_id'];
+			}
+			if ($gcomp_cart_pids) {
+				$gcomp_q = $this->db->query("SELECT 1 FROM " . DB_PREFIX . "product WHERE bnpl_disabled = 1 AND product_id IN (" . implode(',', $gcomp_cart_pids) . ") LIMIT 1");
+				if ($gcomp_q->num_rows) {
+					$gcomp_bnpl_blocked = true;
+				}
+			}
+]]></add>
+    </operation>
+    <!-- 4b. Skip BNPL methods inside the payment loop — anchor matches REAL code: $method = ...->getMethod($this->session->data['payment_address'], $total) -->
+    <operation>
+      <search><![CDATA[$method = $this->{'model_extension_payment_' . $result['code']}->getMethod($this->session->data['payment_address'], $total);]]></search>
+      <add position="before"><![CDATA[
+					// GCOMP BNPL toggle: skip BNPL methods when any cart item has bnpl_disabled
+					if ($gcomp_bnpl_blocked && (
+						stripos($result['code'], 'bnpl') !== false ||
+						stripos($result['code'], 'nawil') !== false
+					)) {
+						continue;
+					}
+]]></add>
+    </operation>
+  </file>
+
+  <!-- 5. Same fix for OnePageCheckout (onepcheckout.php has its own payment_method routine) -->
+  <file path="catalog/controller/checkout/onepcheckout.php">
+    <operation>
+      <search><![CDATA[$results = $this->model_setting_extension->getExtensions('payment');]]></search>
+      <add position="before"><![CDATA[
+		// GCOMP BNPL toggle: check if any cart item disables BNPL
+		$gcomp_bnpl_blocked = false;
+		$gcomp_cart_pids = array();
+		foreach ($this->cart->getProducts() as $cart_product) {
+			$gcomp_cart_pids[] = (int)$cart_product['product_id'];
+		}
+		if ($gcomp_cart_pids) {
+			$gcomp_q = $this->db->query("SELECT 1 FROM " . DB_PREFIX . "product WHERE bnpl_disabled = 1 AND product_id IN (" . implode(',', $gcomp_cart_pids) . ") LIMIT 1");
+			if ($gcomp_q->num_rows) {
+				$gcomp_bnpl_blocked = true;
+			}
+		}
+]]></add>
     </operation>
     <operation>
-      <search><![CDATA[$method_data = $this->{'model_extension_payment_' . $result['code']}->getMethod($payment_address, $total);]]></search>
+      <search><![CDATA[$method = $this->{'model_extension_payment_' . $result['code']}->getMethod($this->session->data['payment_address'], $total);]]></search>
       <add position="before"><![CDATA[
-        // Skip BNPL methods when any cart item has bnpl_disabled
-        if ($gcomp_bnpl_blocked && (
-            stripos($result['code'], 'bnpl') !== false ||
-            stripos($result['code'], 'nawil') !== false
-        )) {
-          continue;
-        }
-      ]]></add>
+				// GCOMP BNPL toggle: skip BNPL methods when any cart item has bnpl_disabled
+				if ($gcomp_bnpl_blocked && (
+					stripos($result['code'], 'bnpl') !== false ||
+					stripos($result['code'], 'nawil') !== false
+				)) {
+					continue;
+				}
+]]></add>
     </operation>
   </file>
 
